@@ -204,7 +204,7 @@ func main() {
     http.HandleFunc("/.well-known/jwks.json", jwksHandler)
     http.HandleFunc("/auth", authHandler)
 
-    fmt.Println("Server listening on port 8080...\n")
+    fmt.Println("Server listening on port 8080...")
     fmt.Println("Exit with Control + C...")
 
     if err := http.ListenAndServe(":8080", nil); err != nil {
