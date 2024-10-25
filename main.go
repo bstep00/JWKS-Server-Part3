@@ -180,32 +180,32 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-    fmt.Println("Starting JWKS server...")
+    fmt.Println("Starting server...")
 
     if err := initDB(); err != nil {
         fmt.Printf("Failed to initialize database: %v\n", err)
         return
     }
-    fmt.Println("Database initialized successfully")
+    fmt.Println("Successfully initialized database!")
 
     // Generate initial keys
     if err := generateKey(false); err != nil { // Valid key
         fmt.Printf("Error generating valid key: %v\n", err)
         return
     }
-    fmt.Println("Generated valid key")
+    fmt.Println("Valid key generated!")
 
     if err := generateKey(true); err != nil { // Expired key
         fmt.Printf("Error generating expired key: %v\n", err)
         return
     }
-    fmt.Println("Generated expired key")
+    fmt.Println("Expired key generated!")
 
     http.HandleFunc("/.well-known/jwks.json", jwksHandler)
     http.HandleFunc("/auth", authHandler)
 
-    fmt.Println("Server listening on :8080")
-    fmt.Println("Use Ctrl+C to stop the server")
+    fmt.Println("Server listening on port 8080...\n")
+    fmt.Println("Exit with Control + C...")
 
     if err := http.ListenAndServe(":8080", nil); err != nil {
         fmt.Printf("Server error: %v\n", err)
