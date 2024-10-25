@@ -122,6 +122,22 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    // Check Basic Auth
+    username, password, hasBasic := r.BasicAuth()
+    if !hasBasic || (username != "userABC" || password != "password123") {
+        // Try JSON auth
+        var creds struct {
+            Username string `json:"username"`
+            Password string `json:"password"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&creds); err != nil ||
+           creds.Username != "userABC" || creds.Password != "password123" {
+            w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+            http.Error(w, "Unauthorized", http.StatusUnauthorized)
+            return
+        }
+    }
+
     wantExpired := r.URL.Query().Get("expired") == "true"
 
     // Get key from database
