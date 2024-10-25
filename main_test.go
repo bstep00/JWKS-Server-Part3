@@ -146,12 +146,58 @@ func TestAuthHandler(t *testing.T) {
         method         string
         queryParam     string
         setupKeys      bool
+        useBasicAuth   bool
+        username       string
+        password       string
         expectedStatus int
     }{
-        {"Valid JWT", "POST", "", true, http.StatusCreated},
-        {"Expired JWT", "POST", "?expired=true", true, http.StatusCreated},
-        {"Wrong Method", "GET", "", true, http.StatusMethodNotAllowed},
-        {"No Suitable Key", "POST", "?expired=invalid", false, http.StatusNotFound},
+        {
+            name:           "Valid JWT Basic Auth",
+            method:         "POST",
+            queryParam:     "",
+            setupKeys:      true,
+            useBasicAuth:   true,
+            username:       "userABC",
+            password:       "password123",
+            expectedStatus: http.StatusCreated,
+        },
+        {
+            name:           "Expired JWT Basic Auth",
+            method:         "POST",
+            queryParam:     "?expired=true",
+            setupKeys:      true,
+            useBasicAuth:   true,
+            username:       "userABC",
+            password:       "password123",
+            expectedStatus: http.StatusCreated,
+        },
+        {
+            name:           "Wrong Method",
+            method:         "GET",
+            queryParam:     "",
+            setupKeys:      true,
+            expectedStatus: http.StatusMethodNotAllowed,
+        },
+        {
+            name:           "Invalid Auth",
+            method:         "POST",
+            queryParam:     "",
+            setupKeys:      true,
+            useBasicAuth:   true,
+            username:       "wrong",
+            password:       "wrong",
+            expectedStatus: http.StatusUnauthorized,
+        },
+        {
+            name:           "No Suitable Key",
+            method:         "POST",
+            queryParam:     "?expired=invalid",
+            setupKeys:      false,
+            useBasicAuth:   true,
+            username:       "userABC",
+            password:       "password123",
+            expectedStatus: http.StatusNotFound,
+        },
     }
 
     for _, tt := range tests {
@@ -165,6 +211,9 @@ func TestAuthHandler(t *testing.T) {
             }
 
             req := httptest.NewRequest(tt.method, "/auth"+tt.queryParam, nil)
+            if tt.useBasicAuth {
+                req.SetBasicAuth(tt.username, tt.password)
+            }
             rr := httptest.NewRecorder()
             authHandler(rr, req)
 
@@ -185,6 +234,46 @@ func TestAuthHandler(t *testing.T) {
                 }
             }
         })
+    }
+}
+
+func TestAuthHandlerJSONAuth(t *testing.T) {
+    setupTest(t)
+    defer cleanupTest()
+    generateKey(false)
+
+    // Test JSON auth
+    creds := struct {
+        Username string `json:"username"`
+        Password string `json:"password"`
+    }{
+        Username: "userABC",
+        Password: "password123",
+    }
+
+    body, err := json.Marshal(creds)
+    if err != nil {
+        t.Fatalf("Failed to marshal credentials: %v", err)
+    }
+
+    req := httptest.NewRequest("POST", "/auth", strings.NewReader(string(body)))
+    req.Header.Set("Content-Type", "application/json")
+    rr := httptest.NewRecorder()
+    authHandler(rr, req)
+
+    if status := rr.Code; status != http.StatusCreated {
+        t.Errorf("handler returned wrong status code: got %v want %v",
+            status, http.StatusCreated)
+    }
+
+    var response struct {
+        Token string `json:"jwt"`
+    }
+    if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+        t.Errorf("Failed to decode response: %v", err)
+    }
+    if response.Token == "" {
+        t.Error("Expected JWT in response, got none")
     }
 }
 
