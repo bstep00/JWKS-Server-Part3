@@ -1,3 +1,13 @@
+/*
+AI was used in parts of this project:
+- Helped debug and fix test coverage issues, mostly with database cleanup between tests
+- Helped troubleshoot SQL database interactions
+- Suggested improvements for code functionality, such as proper database connection handling and better test isolation methods.
+
+The core implementation and logic is my own work, with AI helping primarily with debugging and troubleshooting.
+*/
+
+
 package main
 
 import (
