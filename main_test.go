@@ -14,33 +14,55 @@ import (
 
 const testDBPath = "./test_keys.db"
 
-func resetDB(t *testing.T) {
+func setupTest(t *testing.T) {
+    // Drop existing database
+    os.Remove(testDBPath)
+    os.Remove("./totally_not_my_privateKeys.db")  // Also remove main database
+
     // Close existing connection if any
     if db != nil {
         db.Close()
         db = nil
     }
 
-    // Remove the database file
-    os.Remove(testDBPath)
-
-    // Create a new connection
+    // Create new database connection
     var err error
     db, err = sql.Open("sqlite3", testDBPath)
     if err != nil {
         t.Fatalf("Failed to open test database: %v", err)
     }
 
-    // Initialize schema
-    err = initDB()
+    // Drop and recreate table
+    _, err = db.Exec("DROP TABLE IF EXISTS keys")
     if err != nil {
-        t.Fatalf("Failed to initialize test database: %v", err)
+        t.Fatalf("Failed to drop table: %v", err)
+    }
+
+    // Create table
+    _, err = db.Exec(`
+        CREATE TABLE IF NOT EXISTS keys(
+            kid INTEGER PRIMARY KEY AUTOINCREMENT,
+            key BLOB NOT NULL,
+            exp INTEGER NOT NULL
+        )
+    `)
+    if err != nil {
+        t.Fatalf("Failed to create table: %v", err)
     }
 }
 
+func cleanupTest() {
+    if db != nil {
+        db.Close()
+        db = nil
+    }
+    os.Remove(testDBPath)
+    os.Remove("./totally_not_my_privateKeys.db")
+}
+
 func TestGenerateKey(t *testing.T) {
-    resetDB(t)
-    defer os.Remove(testDBPath)
+    setupTest(t)
+    defer cleanupTest()
 
     err := generateKey(false)
     if err != nil {
@@ -63,10 +85,9 @@ func TestGenerateKey(t *testing.T) {
 }
 
 func TestJWKSHandler(t *testing.T) {
-    resetDB(t)
-    defer os.Remove(testDBPath)
+    setupTest(t)
+    defer cleanupTest()
 
-    // Generate a test key
     generateKey(false)
 
     req := httptest.NewRequest("GET", "/.well-known/jwks.json", nil)
@@ -92,8 +113,8 @@ func TestJWKSHandler(t *testing.T) {
 }
 
 func TestJWKSHandlerErrors(t *testing.T) {
-    resetDB(t)
-    defer os.Remove(testDBPath)
+    setupTest(t)
+    defer cleanupTest()
 
     tests := []struct {
         name           string
@@ -135,8 +156,8 @@ func TestAuthHandler(t *testing.T) {
 
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
-            resetDB(t)
-            defer os.Remove(testDBPath)
+            setupTest(t)
+            defer cleanupTest()
 
             if tt.setupKeys {
                 generateKey(false)
@@ -168,10 +189,9 @@ func TestAuthHandler(t *testing.T) {
 }
 
 func TestDatabaseErrors(t *testing.T) {
-    resetDB(t)
-    defer os.Remove(testDBPath)
+    setupTest(t)
+    defer cleanupTest()
 
-    // Test database error in JWKS handler
     if err := db.Close(); err != nil {
         t.Fatalf("Failed to close database: %v", err)
     }
@@ -186,34 +206,31 @@ func TestDatabaseErrors(t *testing.T) {
 }
 
 func TestMainFunction(t *testing.T) {
-    // Save original stdout
+    setupTest(t)
+    defer cleanupTest()
+
     originalStdout := os.Stdout
     r, w, _ := os.Pipe()
     os.Stdout = w
 
-    // Run main in goroutine
     go func() {
         main()
     }()
 
-    // Wait a bit for server to start
     time.Sleep(500 * time.Millisecond)
 
-    // Close write end of pipe and restore stdout
     w.Close()
     os.Stdout = originalStdout
 
-    // Read output
     output, _ := io.ReadAll(r)
     outputStr := string(output)
 
-    // Check for expected output
     expectedMessages := []string{
-        "Starting JWKS server...",
-        "Database initialized successfully",
-        "Generated valid key",
-        "Generated expired key",
-        "Server listening on :8080",
+        "Starting server...",
+        "Successfully initialized database!",
+        "Valid key generated!",
+        "Expired key generated!",
+        "Server listening on port 8080...",
     }
 
     for _, msg := range expectedMessages {
@@ -221,10 +238,4 @@ func TestMainFunction(t *testing.T) {
             t.Errorf("Expected output to contain '%s', but it didn't", msg)
         }
     }
-
-    // Clean up
-    if db != nil {
-        db.Close()
-    }
-    os.Remove("./totally_not_my_privateKeys.db")
 }
