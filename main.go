@@ -34,7 +34,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// SQL statements for table creation
+// Table creation
 const (
 	createKeysTableSQL = `
         CREATE TABLE IF NOT EXISTS keys(
@@ -63,37 +63,39 @@ const (
         )`
 )
 
-// argon2Params holds the configuration for password hashing
 type argon2Params struct {
 	memory      uint32
 	iterations  uint32
 	parallelism uint8
-	saltLength  uint32
 	keyLength   uint32
 }
 
-// Global variables for database connection and argon2 configuration
 var (
 	db           *sql.DB
 	argon2Config = &argon2Params{
 		memory:      64 * 1024,
 		iterations:  3,
 		parallelism: 2,
-		saltLength:  16,
 		keyLength:   32,
 	}
 )
 
-// generateSalt creates a cryptographically secure random salt
-func generateSalt(length uint32) ([]byte, error) {
-	salt := make([]byte, length)
+// Creates random salt
+const saltLength = 16
+
+func generateSalt() ([]byte, error) {
+	salt := make([]byte, saltLength)
 	_, err := rand.Read(salt)
 	return salt, err
 }
 
-// hashPassword creates a secure hash of a password using Argon2
+// Creates a hash of a password
 func hashPassword(password string, params *argon2Params) (string, error) {
-	salt, err := generateSalt(params.saltLength)
+	if params == nil {
+		return "", fmt.Errorf("nil params")
+	}
+
+	salt, err := generateSalt()
 	if err != nil {
 		return "", err
 	}
@@ -110,8 +112,8 @@ func hashPassword(password string, params *argon2Params) (string, error) {
 	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
 	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
 
-	encodedHash := fmt.Sprintf(
-		"$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
+	// $argon2id$v=19$m=<memory>,t=<iterations>,p=<parallelism>$<salt>$<hash>
+	encodedHash := fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
 		params.memory,
 		params.iterations,
 		params.parallelism,
@@ -122,7 +124,7 @@ func hashPassword(password string, params *argon2Params) (string, error) {
 	return encodedHash, nil
 }
 
-// initDB creates the database and required tables
+// Creates the database and tables
 func initDB() error {
 	var err error
 	db, err = sql.Open("sqlite3", "./totally_not_my_privateKeys.db")
@@ -143,7 +145,7 @@ func initDB() error {
 	return nil
 }
 
-// encryptKey encrypts a private key using AES-GCM
+// Encrypts a private key
 func encryptKey(key []byte) ([]byte, error) {
 	encKey := os.Getenv("NOT_MY_KEY")
 	if len(encKey) != 32 {
@@ -168,7 +170,7 @@ func encryptKey(key []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, key, nil), nil
 }
 
-// decryptKey decrypts a private key using AES-GCM
+// Decrypts a private key
 func decryptKey(encrypted []byte) ([]byte, error) {
 	encKey := os.Getenv("NOT_MY_KEY")
 	if len(encKey) != 32 {
@@ -194,7 +196,7 @@ func decryptKey(encrypted []byte) ([]byte, error) {
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
-// generateKey creates a new RSA key pair and stores it in the database
+// Creates a new RSA key pair and stores it in the database
 func generateKey(expired bool) error {
 	// Generate RSA key pair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -202,14 +204,14 @@ func generateKey(expired bool) error {
 		return err
 	}
 
-	// Convert to PEM
+	// Convert
 	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: privateKeyBytes,
 	})
 
-	// Encrypt the PEM data
+	// Encrypt the data
 	encryptedKey, err := encryptKey(privateKeyPEM)
 	if err != nil {
 		return fmt.Errorf("error encrypting key: %v", err)
@@ -230,7 +232,7 @@ func generateKey(expired bool) error {
 	return nil
 }
 
-// registerHandler processes new user registration requests
+// Processes new user registration requests
 func registerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -247,14 +249,27 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate fields
+	if req.Username == "" {
+		http.Error(w, "Username is required", http.StatusBadRequest)
+		return
+	}
+	if req.Email == "" {
+		http.Error(w, "Email is required", http.StatusBadRequest)
+		return
+	}
+
+	// Generate password
 	password := uuid.New().String()
 
+	// Hash password
 	hashedPassword, err := hashPassword(password, argon2Config)
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
+	// Store in database
 	_, err = db.Exec(
 		"INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
 		req.Username,
@@ -262,59 +277,70 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		req.Email,
 	)
 	if err != nil {
-		http.Error(w, "Username or email already exists", http.StatusConflict)
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			http.Error(w, "Username or email already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
+	// Return generated password
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"password": password,
 	})
 }
 
-// verifyPassword checks if a provided password matches the stored hash
+// Checks if a provided password matches the stored hash
 func verifyPassword(password, username string) bool {
-	// Get the stored hash for the user
 	var storedHash string
 	err := db.QueryRow("SELECT password_hash FROM users WHERE username = ?", username).Scan(&storedHash)
+	if err == sql.ErrNoRows {
+		return false
+	}
 	if err != nil {
-		fmt.Printf("Error retrieving password hash: %v\n", err)
+		// If unexpected error
+		fmt.Printf("Unexpected error retrieving password hash: %v\n", err)
 		return false
 	}
 
-	// Parse the hash parameters
+	// Split the hash string into parts
+	// $argon2id$v=19$m=<memory>,t=<iterations>,p=<parallelism>$<salt>$<hash>
 	parts := strings.Split(storedHash, "$")
-	if len(parts) != 5 {
-		fmt.Printf("Invalid hash format\n")
+	if len(parts) != 6 {
+		fmt.Printf("Invalid hash format, got %d parts, expected 6\n", len(parts))
 		return false
 	}
 
+	// Parse the parameters
 	var params argon2Params
-	_, err = fmt.Sscanf(parts[2], "v=19$m=%d,t=%d,p=%d", &params.memory, &params.iterations, &params.parallelism)
+	_, err = fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d",
+		&params.memory,
+		&params.iterations,
+		&params.parallelism,
+	)
 	if err != nil {
-		fmt.Printf("Error parsing hash parameters: %v\n", err)
+		fmt.Printf("Error parsing parameters: %v\n", err)
 		return false
 	}
 
-	// Decode salt and hash
-	salt, err := base64.RawStdEncoding.DecodeString(parts[3])
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		fmt.Printf("Error decoding salt: %v\n", err)
 		return false
 	}
 
-	decodedHash, err := base64.RawStdEncoding.DecodeString(parts[4])
+	decodedHash, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
 		fmt.Printf("Error decoding hash: %v\n", err)
 		return false
 	}
 
-	// Set key length from decoded hash
 	params.keyLength = uint32(len(decodedHash))
-	params.saltLength = uint32(len(salt))
 
-	// Compute hash of provided password
+	// Compute the hash with the same parameters
 	targetHash := argon2.IDKey(
 		[]byte(password),
 		salt,
@@ -323,17 +349,10 @@ func verifyPassword(password, username string) bool {
 		params.parallelism,
 		params.keyLength,
 	)
-
-	// Compare in constant time
-	match := subtle.ConstantTimeCompare(targetHash, decodedHash) == 1
-	if !match {
-		fmt.Printf("Password verification failed for user: %s\n", username)
-	}
-
-	return match
+	return subtle.ConstantTimeCompare(targetHash, decodedHash) == 1
 }
 
-// updateLastLogin updates the last_login timestamp for a user
+// Updates the last login timestamp for user
 func updateLastLogin(userID int64) error {
 	_, err := db.Exec(
 		"UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
@@ -342,7 +361,7 @@ func updateLastLogin(userID int64) error {
 	return err
 }
 
-// logAuthRequest logs authentication requests and updates last login time
+// Logs authentication requests and updates last login time
 func logAuthRequest(userID int64, r *http.Request) error {
 	if err := updateLastLogin(userID); err != nil {
 		return err
@@ -356,7 +375,7 @@ func logAuthRequest(userID int64, r *http.Request) error {
 	return err
 }
 
-// jwksHandler serves the JWKS (JSON Web Key Set) endpoint
+// JWKS endpoint
 func jwksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -406,7 +425,7 @@ func jwksHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jwks)
 }
 
-// authHandler handles authentication requests and JWT token generation
+// Authentication requests and JWT token generation
 func authHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -499,19 +518,19 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
 }
 
-// main initializes and starts the server
+// Main initializes and starts the server
 func main() {
 	fmt.Println("Starting server...")
 
 	// Check for encryption key
 	if os.Getenv("NOT_MY_KEY") == "" {
 		fmt.Println("Error: NOT_MY_KEY environment variable not set")
-		fmt.Println("Please set a 32-byte encryption key, for example:")
-		fmt.Println("export NOT_MY_KEY=12345678901234567890123456789012")
+		// For ease of copying and pasting
+		fmt.Println("set NOT_MY_KEY=12345678901234567890123456789012")
 		return
 	}
 
@@ -521,7 +540,7 @@ func main() {
 	}
 	fmt.Println("Successfully initialized database!")
 
-	// Create default user if it doesn't exist
+	// Create default user if one doesn't exist
 	hashedPassword, err := hashPassword("password123", argon2Config)
 	if err != nil {
 		fmt.Printf("Error hashing default password: %v\n", err)
